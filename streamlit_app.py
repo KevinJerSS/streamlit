@@ -1,162 +1,61 @@
 import streamlit as st
-import pandas as pd
+from PIL import Image
 import numpy as np
-import plotly.express as px
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, confusion_matrix
+import tensorflow as tf
+from tensorflow.keras.applications.mobilenet_v2 import MobileNetV2, preprocess_input, decode_predictions
 
-# --- Configuración de la página ---
-st.set_page_config(page_title="Pipeline ML: Promociones Retail", layout="wide")
+# Configuración de la página
+st.set_page_config(page_title="Detector de Razas de Perros", page_icon="🐶", layout="centered")
 
-# --- Generación de Datos (Mock Data) ---
-@st.cache_data
-def generar_datos():
-    np.random.seed(42)
-    n = 1000
-    df = pd.DataFrame({
-        'Gasto_Abarrotes_Soles': np.random.normal(35, 15, n),
-        'Frecuencia_Visitas_Mes': np.random.randint(1, 10, n),
-        'Uso_Tarjeta_Fidelidad': np.random.choice([0, 1], n, p=[0.3, 0.7]),
-        'Ticket_Promedio': np.random.normal(120, 40, n)
-    })
-    
-    # Lógica de la variable objetivo: Acepta la promoción del aceite
-    # Es más probable que acepten si gastan > 29.90 en abarrotes y usan tarjeta
-    condicion_favorable = (df['Gasto_Abarrotes_Soles'] > 29.90) & (df['Uso_Tarjeta_Fidelidad'] == 1)
-    probabilidades = np.where(condicion_favorable, 0.75, 0.20)
-    df['Acepta_Promo_Aceite'] = np.random.binomial(1, probabilidades)
-    
-    return df
+# Cargar el modelo preentrenado
+# Usamos @st.cache_resource para que el modelo se cargue solo una vez y no cada vez que interactúas con la app
+@st.cache_resource
+def cargar_modelo():
+    return MobileNetV2(weights='imagenet')
 
-df = generar_datos()
+modelo = cargar_modelo()
 
-# --- Menú Lateral (Fases CRISP-DM) ---
-st.sidebar.title("Metodología CRISP-DM")
-st.sidebar.info("Navega por las fases del proyecto de Machine Learning")
-fase = st.sidebar.radio("Selecciona la fase:", [
-    "1. Business Understanding",
-    "2. Data Understanding",
-    "3. Data Preparation",
-    "4. Modeling",
-    "5. Evaluation"
-])
+st.title("🐶 Detector de Razas de Perros con ML")
+st.markdown("""
+Sube una foto de un perro y este modelo de Machine Learning (MobileNetV2) analizará la imagen para detectar de qué raza se trata.
+*Nota: Los nombres de las razas provienen de la base de datos original y se mostrarán en inglés.*
+""")
 
-# --- FASE 1: Business Understanding ---
-if fase == "1. Business Understanding":
-    st.title("1. Comprensión del Negocio (Business Understanding)")
-    st.markdown("""
-    ### Objetivo
-    Optimizar el perifoneo y la comunicación en tienda para una oferta específica: 
-    **"Por compras mayores a S/29.90 en abarrotes, llévate a S/9.90 2 botellas de aceite de girasol"**.
-    
-    ### Problema de Machine Learning
-    Crear un modelo de clasificación que prediga la probabilidad de que un cliente acepte esta promoción en la caja, basándose en su comportamiento de compra histórico y los artículos actuales en su carrito (categoría abarrotes).
-    
-    ### Criterio de Éxito
-    * Aumentar la tasa de conversión de la promoción.
-    * Reducir el tiempo de ofrecimiento en caja, enfocándose en clientes con alta probabilidad de compra.
-    """)
+# Creador de subida de archivos
+archivo_subido = st.file_uploader("Elige una imagen...", type=["jpg", "jpeg", "png"])
 
-# --- FASE 2: Data Understanding ---
-elif fase == "2. Data Understanding":
-    st.title("2. Comprensión de los Datos (Data Understanding)")
+if archivo_subido is not None:
+    # Mostrar la imagen
+    imagen = Image.open(archivo_subido)
+    st.image(imagen, caption='Imagen a analizar', use_container_width=True)
     
-    st.subheader("Vista previa de las transacciones")
-    st.dataframe(df.head(10), use_container_width=True)
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Distribución de la Variable Objetivo")
-        fig_target = px.pie(df, names='Acepta_Promo_Aceite', hole=0.4, 
-                            labels={'Acepta_Promo_Aceite': 'Aceptó Promo'},
-                            color_discrete_sequence=['#ff9999','#66b3ff'])
-        st.plotly_chart(fig_target, use_container_width=True)
+    with st.spinner("Analizando la imagen..."):
+        # Preprocesamiento de la imagen para que MobileNetV2 la entienda
+        # 1. Convertir a RGB (por si es una imagen con fondo transparente o blanco y negro)
+        # 2. Redimensionar a 224x224 píxeles
+        img_procesada = imagen.convert('RGB').resize((224, 224))
         
-    with col2:
-        st.subheader("Gasto en Abarrotes vs Aceptación")
-        fig_scatter = px.box(df, x='Acepta_Promo_Aceite', y='Gasto_Abarrotes_Soles', 
-                             color='Acepta_Promo_Aceite')
-        # Línea de la regla de negocio
-        fig_scatter.add_hline(y=29.90, line_dash="dot", annotation_text="Regla: S/29.90", annotation_position="bottom right")
-        st.plotly_chart(fig_scatter, use_container_width=True)
-
-# --- FASE 3: Data Preparation ---
-elif fase == "3. Data Preparation":
-    st.title("3. Preparación de los Datos (Data Preparation)")
-    st.markdown("En esta fase separamos los datos en características (X) y la variable a predecir (y), y dividimos en conjuntos de entrenamiento y prueba.")
-    
-    X = df.drop('Acepta_Promo_Aceite', axis=1)
-    y = df['Acepta_Promo_Aceite']
-    
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
-    
-    col1, col2 = st.columns(2)
-    col1.metric("Registros de Entrenamiento", X_train.shape[0])
-    col2.metric("Registros de Prueba", X_test.shape[0])
-    
-    st.code("""
-# Código de partición de datos
-X = df.drop('Acepta_Promo_Aceite', axis=1)
-y = df['Acepta_Promo_Aceite']
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
-    """, language='python')
-
-# --- FASE 4: Modeling ---
-elif fase == "4. Modeling":
-    st.title("4. Modelado (Modeling)")
-    st.markdown("Entrenaremos un modelo de **Random Forest**, el cual es excelente para capturar reglas de negocio complejas en entornos de retail.")
-    
-    if st.button("Entrenar Modelo"):
-        with st.spinner("Entrenando Random Forest..."):
-            X = df.drop('Acepta_Promo_Aceite', axis=1)
-            y = df['Acepta_Promo_Aceite']
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
-            
-            modelo = RandomForestClassifier(n_estimators=100, random_state=42, max_depth=5)
-            modelo.fit(X_train, y_train)
-            
-            # Guardamos el modelo en el estado de la sesión para usarlo en la siguiente fase
-            st.session_state['modelo'] = modelo
-            st.session_state['X_test'] = X_test
-            st.session_state['y_test'] = y_test
-            
-            st.success("¡Modelo entrenado exitosamente!")
-            
-            # Mostrar importancia de las variables
-            importancia = pd.DataFrame({
-                'Variable': X.columns,
-                'Importancia': modelo.feature_importances_
-            }).sort_values('Importancia', ascending=True)
-            
-            fig_imp = px.bar(importancia, x='Importancia', y='Variable', orientation='h',
-                             title="¿Qué factores influyen más en la compra?")
-            st.plotly_chart(fig_imp, use_container_width=True)
-
-# --- FASE 5: Evaluation ---
-elif fase == "5. Evaluation":
-    st.title("5. Evaluación (Evaluation)")
-    
-    if 'modelo' not in st.session_state:
-        st.warning("⚠️ Por favor, ve a la fase de 'Modeling' y entrena el modelo primero.")
-    else:
-        modelo = st.session_state['modelo']
-        X_test = st.session_state['X_test']
-        y_test = st.session_state['y_test']
+        # Convertir a arreglo de numpy y añadir una dimensión extra (batch)
+        img_array = np.array(img_procesada)
+        img_array = np.expand_dims(img_array, axis=0)
         
-        y_pred = modelo.predict(X_test)
-        acc = accuracy_score(y_test, y_pred)
+        # Aplicar el preprocesamiento específico del modelo
+        img_array = preprocess_input(img_array)
         
-        st.metric("Precisión (Accuracy) del Modelo", f"{acc * 100:.2f}%")
+        # Realizar la predicción
+        predicciones = modelo.predict(img_array)
         
-        st.subheader("Matriz de Confusión")
-        cm = confusion_matrix(y_test, y_pred)
-        fig_cm = px.imshow(cm, text_auto=True, color_continuous_scale='Blues',
-                           labels=dict(x="Predicción", y="Realidad"),
-                           x=['No Acepta', 'Acepta'], y=['No Acepta', 'Acepta'])
-        st.plotly_chart(fig_cm)
+        # Decodificar las predicciones (obtener el top 3)
+        resultados = decode_predictions(predicciones, top=3)[0]
         
-        st.markdown("""
-        **Conclusión de la Evaluación:**
-        El modelo ha aprendido a identificar de forma eficiente qué perfil de cliente es propenso a llevarse la oferta del aceite. Este algoritmo puede integrarse en el sistema de punto de venta (POS) para emitir alertas automáticas al cajero.
-        """)
+        st.success("¡Análisis completado!")
+        st.subheader("Resultados:")
+        
+        # Mostrar los resultados formateados
+        for i, (imagenet_id, etiqueta, probabilidad) in enumerate(resultados):
+            nombre_raza = etiqueta.replace('_', ' ').title()
+            porcentaje = probabilidad * 100
+            st.write(f"**{i+1}. {nombre_raza}** - Probabilidad: {porcentaje:.2f}%")
+            
+            # Barra de progreso visual
+            st.progress(float(probabilidad))
