@@ -1,60 +1,61 @@
 import streamlit as st
 from PIL import Image
-import numpy as np
-import tensorflow as tf
-from tensorflow.keras.applications.mobilenet_v2 import MobileNetV2, preprocess_input, decode_predictions
+import torch
+from torchvision.models import mobilenet_v3_small, MobileNet_V3_Small_Weights
+import requests
 
-# --- Configuración de la página ---
-st.set_page_config(page_title="Identificador de Razas de Perro", page_icon="🐾", layout="centered")
+# --- Configuración ---
+st.set_page_config(page_title="Detector Ligero", page_icon="🐕", layout="centered")
 
-# --- Carga del Modelo de Machine Learning ---
-# Usamos @st.cache_resource para cargar el modelo una sola vez y hacer la app muy rápida
+st.title("🐕 Detector de Razas (Versión Ultraligera)")
+st.markdown("Esta versión usa **MobileNet V3 Small** y PyTorch CPU. Está optimizada para gastar el mínimo de memoria y procesar las imágenes en milisegundos.")
+
+# --- Cargar Modelo Eficiente ---
 @st.cache_resource
-def cargar_modelo():
-    return MobileNetV2(weights='imagenet')
-
-modelo = cargar_modelo()
-
-# --- Interfaz de Usuario ---
-st.title("🐾 ¿Qué raza es este perro?")
-st.markdown("""
-Sube la foto de un perro. Nuestra Inteligencia Artificial analizará los rasgos físicos y te dirá con qué raza coincide más.
-*(Los nombres de las razas se mostrarán en inglés, tal como están en la base de datos científica).*
-""")
-
-# Selector de archivos
-archivo_subido = st.file_uploader("Sube una foto de un perro (JPG, JPEG, PNG)...", type=["jpg", "jpeg", "png"])
-
-if archivo_subido is not None:
-    # 1. Mostrar la imagen original
-    imagen = Image.open(archivo_subido)
-    st.image(imagen, caption='Tu imagen', use_container_width=True)
+def cargar_recursos():
+    # 1. Cargamos los pesos del modelo más ligero disponible
+    pesos = MobileNet_V3_Small_Weights.DEFAULT
+    modelo = mobilenet_v3_small(weights=pesos)
+    modelo.eval() # Lo ponemos en modo "solo lectura" (ahorra memoria)
     
-    with st.spinner("La IA está escaneando los rasgos de la imagen..."):
-        # 2. Preprocesamiento (Preparar la foto para la IA)
-        # Convertimos a RGB por si la imagen tiene canal alfa (transparente) y redimensionamos a 224x224
-        img_procesada = imagen.convert('RGB').resize((224, 224))
+    # 2. Obtenemos las reglas de preprocesamiento de la imagen
+    preprocesar = pesos.transforms()
+    
+    # 3. Descargamos la lista de nombres de animales/razas de internet (ImageNet)
+    url_etiquetas = "https://raw.githubusercontent.com/pytorch/hub/master/imagenet_classes.txt"
+    etiquetas = requests.get(url_etiquetas).text.split('\n')
+    
+    return modelo, preprocesar, etiquetas
+
+modelo, preprocesar, etiquetas = cargar_recursos()
+
+# --- Interfaz ---
+archivo = st.file_uploader("Sube una foto de un perro (JPG/PNG)...", type=["jpg", "png", "jpeg"])
+
+if archivo:
+    imagen = Image.open(archivo).convert('RGB')
+    st.image(imagen, caption="Imagen cargada", use_container_width=True)
+    
+    with st.spinner("Analizando a alta velocidad..."):
+        # Preparar la imagen
+        img_tensor = preprocesar(imagen).unsqueeze(0)
         
-        # Convertimos la imagen a una matriz de números
-        img_array = np.array(img_procesada)
-        img_array = np.expand_dims(img_array, axis=0)
-        img_array = preprocess_input(img_array)
+        # Predecir sin guardar historial matemático (ahorra muchísima RAM)
+        with torch.no_grad():
+            prediccion = modelo(img_tensor)
         
-        # 3. Predicción
-        predicciones = modelo.predict(img_array)
+        # Calcular probabilidades reales (de 0 a 100%)
+        probabilidades = torch.nn.functional.softmax(prediccion[0], dim=0)
+        top3_prob, top3_ids = torch.topk(probabilidades, 3)
         
-        # Extraemos las 3 razas más probables
-        resultados = decode_predictions(predicciones, top=3)[0]
-        
-        # 4. Mostrar Resultados
         st.success("¡Análisis completado!")
-        st.subheader("Resultados de la IA:")
+        st.subheader("Resultados:")
         
-        for i, (id_red, raza, probabilidad) in enumerate(resultados):
-            # Limpiamos el texto para que se vea bonito
-            nombre_limpio = raza.replace('_', ' ').capitalize()
-            porcentaje = probabilidad * 100
+        # Mostrar el Top 3
+        for i in range(3):
+            # Limpiamos el nombre para que se lea mejor (ej. "golden_retriever" -> "Golden Retriever")
+            raza = etiquetas[top3_ids[i]].replace('_', ' ').title()
+            prob = top3_prob[i].item()
             
-            st.write(f"**{i+1}. {nombre_limpio}**")
-            st.write(f"Nivel de confianza: {porcentaje:.2f}%")
-            st.progress(float(probabilidad))
+            st.write(f"**{i+1}. {raza}** - {prob * 100:.1f}%")
+            st.progress(prob)
